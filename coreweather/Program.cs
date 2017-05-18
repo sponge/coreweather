@@ -1,6 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-using System.IO;
+﻿using System.IO;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
 
@@ -20,7 +18,7 @@ namespace coreweather
 
             if (!File.Exists("cacheresult.json"))
             {
-                forecast = await Weather.GetForecastAsync(32.9, -96.8);
+                forecast = await Weather.GetForecastAsync("carrollton tx");
                 string output = JsonConvert.SerializeObject(forecast);
                 File.WriteAllText("cacheresult.json", output);
             }

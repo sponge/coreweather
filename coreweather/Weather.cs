@@ -1,6 +1,5 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Text;
 using ImageSharp;
 using ImageSharp.Drawing;
 using DarkSky.Services;
@@ -9,6 +8,11 @@ using DarkSky.Models;
 using System.Threading.Tasks;
 using System.Numerics;
 using SixLabors.Fonts;
+using System.Net.Http;
+using Newtonsoft.Json.Linq;
+using NodaTime.TimeZones;
+using System.Linq;
+using ImageSharp.Drawing.Pens;
 
 namespace coreweather
 {
@@ -37,6 +41,14 @@ namespace coreweather
         public Rgba32 Color { get; set; }
         public Image<Rgba32> Image { get; set; }
     }
+
+    public class Location
+    {
+        public string FormattedAddress { get; set; }
+        public double Latitude { get; set; }
+        public double Longitude { get; set; }
+    }
+
     public class WeatherRendererDay
     {
         public DateTime Date { get; set; }
@@ -51,7 +63,6 @@ namespace coreweather
         public string Address { get; set; }
         public string Unit { get; set; }
         public DateTime Date { get; set; }
-        public string Timezone { get; set; }
         public double? Temperature { get; set; }
         public double? FeelsLike { get; set; }
         public string Alert { get; set; }
@@ -66,6 +77,10 @@ namespace coreweather
         private Font lgFont;
         private Font smFont;
         private Dictionary<string, Image<Rgba32>> images;
+        private Dictionary<string, string> weatherDescription = new Dictionary<string, string>()
+        {
+
+        };
 
         public Weather(string darkSkyApiKey)
         {
@@ -83,23 +98,54 @@ namespace coreweather
                 images.Add(basename, Image.Load(gif));
             }
         }
-
         // only get the data here, buddy
-        public async Task<WeatherRendererInfo> GetForecastAsync(double lat, double lng)
+        public async Task<WeatherRendererInfo> GetForecastAsync(string query)
         {
+            // use google to get address, lat, and lng for a human-entered string
+            Location location;
+            try
+            {
+                var requestUri = string.Format("http://maps.googleapis.com/maps/api/geocode/json?address={0}&sensor=false", Uri.EscapeDataString(query));
+
+                using (var client = new HttpClient())
+                {
+                    var request = await client.GetAsync(requestUri);
+                    var content = await request.Content.ReadAsStringAsync();
+                    JObject results = JObject.Parse(content);
+
+                    location = new Location
+                    {
+                        Latitude = results["results"][0]["geometry"]["location"]["lat"].Value<double>(),
+                        Longitude = results["results"][0]["geometry"]["location"]["lng"].Value<double>(),
+                        FormattedAddress = results["results"][0]["formatted_address"].Value<string>()
+                    };
+                }
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+
+            // request darksky without minutely/hourly, and use location to determine units
             var WeatherService = new DarkSkyService(darkSkyApiKey);
-            DarkSkyResponse forecast = await WeatherService.GetForecast(lat, lng, new DarkSkyService.OptionalParameters
+            DarkSkyResponse forecast = await WeatherService.GetForecast(location.Latitude, location.Longitude, new DarkSkyService.OptionalParameters
             {
                 DataBlocksToExclude = new List<string> { "minutely", "hourly", },
                 MeasurementUnits = "auto"
             });
 
+            // timezones suck, convert olson to timezoneinfo
+            var mappings = TzdbDateTimeZoneSource.Default.WindowsMapping.MapZones;
+            var map = mappings.FirstOrDefault(x =>
+                x.TzdbIds.Any(z => z.Equals(forecast.Response.Timezone, StringComparison.OrdinalIgnoreCase)));
+            TimeZoneInfo tz = map == null ? null : TimeZoneInfo.FindSystemTimeZoneById(map.WindowsId);
+
+            // fuckin do it up
             var info = new WeatherRendererInfo()
             {
-                Address = "FIXME: geocode addy",
+                Address = location.FormattedAddress,
                 Unit = forecast.Response.Flags.Units == "us" ? "F" : "C",
-                Date = DateTime.UtcNow,
-                Timezone = forecast.Response.Timezone,
+                Date = TimeZoneInfo.ConvertTime(DateTime.UtcNow, tz),
                 Temperature = forecast.Response.Currently.Temperature,
                 FeelsLike = forecast.Response.Currently.ApparentTemperature,
                 Alert = forecast.Response.Alerts?[0].Title
@@ -111,7 +157,7 @@ namespace coreweather
                 {
                     HiTemp = day.TemperatureMax,
                     LoTemp = day.TemperatureMin,
-                    Summary = day.Icon, // FIXME: needs a nicer description
+                    Summary = weatherDescription.ContainsKey(day.Icon) ? weatherDescription[day.Icon] : day.Icon.Replace("-", ""),
                     Icon = day.Icon,
                     Date = new DateTime(1970, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc).AddSeconds(day.Time).ToLocalTime()
                 };
@@ -128,13 +174,17 @@ namespace coreweather
 
             using (Image<Rgba32> image = new Image<Rgba32>(images["background"]))
             {
-                var now = info.Date; // FIXME: need to add timezone offset, gotta parse IANA string + TimeSpan.FromHours(info.Date.offset);
+                var now = info.Date;
 
                 var topDateLine = now.ToString("h:mm:ss tt").ToUpper();
                 var bottomDateLine = now.ToString("ddd MMM d").ToUpper();
-                // FIXME: if alert, need red bottom instead of blue
                 var tickerLine = info.Alert != null ? info.Alert + "\n" : "";
                 tickerLine += $"Temp: {(int)info.Temperature}°{info.Unit}   Feels Like: {(int)info.FeelsLike}°{info.Unit}";
+
+                if (info.Alert != null)
+                {
+                    image.Fill<Rgba32>(WeatherColors.Red, new Rectangle(0, 480, image.Width, 96));
+                }
 
                 // everything except the forecast
                 var cmds = new List<DrawCommand> {
@@ -154,7 +204,7 @@ namespace coreweather
 
                         // day of week, icon, summary
                         new DrawCommand() {Text = day.Date.ToString("ddd").ToUpper(), TextAlign = TextAlignment.Center, IsRelative = true, X = 100, Font = mdFont, Color = WeatherColors.Yellow},
-                        new DrawCommand() {Image = images[day.Icon], IsRelative = true, X = -90, Y = 50 }, // FIXME: need default
+                        new DrawCommand() {Image = images.ContainsKey(day.Icon) ? images[day.Icon] : images["clear-day"], IsRelative = true, X = -90, Y = 50 },
                         new DrawCommand() {Text = day.Summary, TextAlign = TextAlignment.Center, IsRelative = true, X = 90, Y = 125, Font = mdFont, Color = WeatherColors.White},
 
                         // low temperature
@@ -186,7 +236,6 @@ namespace coreweather
                     // if we have a text object, use textalignment, color, and text fields
                     if (cmd.Text != null)
                     {
-                        // FIXME: need an outline to really be like the weatherstar 4000
                         var textOpts = new TextGraphicsOptions(false) { TextAlignment = cmd.TextAlign };
                         image.DrawText(cmd.Text, cmd.Font, WeatherColors.Black, new Vector2(x + 2, y + 2), textOpts);
                         image.DrawText(cmd.Text, cmd.Font, cmd.Color, new Vector2(x, y), textOpts);

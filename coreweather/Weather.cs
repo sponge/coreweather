@@ -79,7 +79,16 @@ namespace coreweather
         private Dictionary<string, Image<Rgba32>> images;
         private Dictionary<string, string> weatherDescription = new Dictionary<string, string>()
         {
-
+            ["clear-day"] = "Clear",
+            ["clear-night"] = "Clear",
+            ["cloudy"] = "Cloudy",
+            ["fog"] = "Fog",
+            ["partly-cloudy-day"] = "Partly\nCloudy",
+            ["partly-cloudy-night"] = "Partly\nCloudy",
+            ["rain"] = "Rain",
+            ["sleet"] = "Sleet",
+            ["snow"] = "Snow",
+            ["wind"] = "Wind"
         };
 
         public Weather(string darkSkyApiKey)

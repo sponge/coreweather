@@ -17,15 +17,15 @@ namespace coreweather
         {
             var Weather = new Weather(args[0]);
             WeatherRendererInfo forecast;
-            if (File.Exists("cacheresult.json"))
-            {
-                forecast = JsonConvert.DeserializeObject<WeatherRendererInfo>(File.ReadAllText("cacheresult.json"));
-            } else
+
+            if (!File.Exists("cacheresult.json"))
             {
                 forecast = await Weather.GetForecastAsync(32.9, -96.8);
                 string output = JsonConvert.SerializeObject(forecast);
                 File.WriteAllText("cacheresult.json", output);
             }
+
+            forecast = JsonConvert.DeserializeObject<WeatherRendererInfo>(File.ReadAllText("cacheresult.json"));
 
             using (MemoryStream img = Weather.RenderWeatherImage(forecast))
             using (FileStream fstream = File.OpenWrite("test.gif"))

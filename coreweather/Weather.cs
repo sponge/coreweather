@@ -94,14 +94,16 @@ namespace coreweather
                 MeasurementUnits = "auto"
             });
 
-            var info = new WeatherRendererInfo();
-            info.Address = "FIXME: geocode addy";
-            info.Unit = forecast.Response.Flags.Units == "us" ? "F" : "C";
-            info.Date = DateTime.UtcNow;
-            info.Timezone = forecast.Response.Timezone;
-            info.Temperature = forecast.Response.Currently.Temperature;
-            info.FeelsLike = forecast.Response.Currently.ApparentTemperature;
-            info.Alert = forecast.Response.Alerts != null ? forecast.Response.Alerts[0].Title : null;
+            var info = new WeatherRendererInfo()
+            {
+                Address = "FIXME: geocode addy",
+                Unit = forecast.Response.Flags.Units == "us" ? "F" : "C",
+                Date = DateTime.UtcNow,
+                Timezone = forecast.Response.Timezone,
+                Temperature = forecast.Response.Currently.Temperature,
+                FeelsLike = forecast.Response.Currently.ApparentTemperature,
+                Alert = forecast.Response.Alerts?[0].Title
+            };
 
             forecast.Response.Daily.Data.GetRange(0, 4).ForEach(delegate (DataPoint day)
             {
@@ -184,6 +186,7 @@ namespace coreweather
                     // if we have a text object, use textalignment, color, and text fields
                     if (cmd.Text != null)
                     {
+                        // FIXME: need an outline to really be like the weatherstar 4000
                         var textOpts = new TextGraphicsOptions(false) { TextAlignment = cmd.TextAlign };
                         image.DrawText(cmd.Text, cmd.Font, WeatherColors.Black, new Vector2(x + 2, y + 2), textOpts);
                         image.DrawText(cmd.Text, cmd.Font, cmd.Color, new Vector2(x, y), textOpts);

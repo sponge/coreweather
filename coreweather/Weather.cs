@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Globalization;
 using ImageSharp;
 using ImageSharp.Drawing;
 using DarkSky.Services;
@@ -12,10 +13,19 @@ using System.Net.Http;
 using Newtonsoft.Json.Linq;
 using NodaTime.TimeZones;
 using System.Linq;
+using Coremero.Utilities;
 using ImageSharp.Drawing.Pens;
+using ImageSharp.Quantizers;
+using NodaTime;
+using SixLabors.Primitives;
+using System.Text.RegularExpressions;
 
-namespace coreweather
+namespace Coremero.Plugin.Weather
 {
+    // Sponges weather renderer.
+    // Taken from https://github.com/sponge/coreweather 
+
+    // TODO: Go hog wild and clean this up to my standard, whatever that is.
     public static class WeatherColors
     {
         public static Rgba32 White = new Rgba32(255, 255, 255);
@@ -37,7 +47,8 @@ namespace coreweather
         public int Y { get; set; }
         public string Text { get; set; }
         public Font Font { get; set; }
-        public TextAlignment TextAlign { get; set; }
+        public HorizontalAlignment HorizontalAlignment { get; set; }
+        public VerticalAlignment VerticalAlignment { get; set; }
         public Rgba32 Color { get; set; }
         public Image<Rgba32> Image { get; set; }
     }
@@ -51,18 +62,19 @@ namespace coreweather
 
     public class WeatherRendererDay
     {
-        public DateTime Date { get; set; }
+        public ZonedDateTime Date { get; set; }
         public string Day { get; set; }
         public string Icon { get; set; }
         public string Summary { get; set; }
         public double? HiTemp { get; set; }
         public double? LoTemp { get; set; }
     }
+
     public class WeatherRendererInfo
     {
         public string Address { get; set; }
         public string Unit { get; set; }
-        public DateTime Date { get; set; }
+        public ZonedDateTime Date { get; set; }
         public double? Temperature { get; set; }
         public double? FeelsLike { get; set; }
         public string Alert { get; set; }
@@ -77,18 +89,19 @@ namespace coreweather
         private Font lgFont;
         private Font smFont;
         private Dictionary<string, Image<Rgba32>> images;
+
         private Dictionary<string, string> weatherDescription = new Dictionary<string, string>()
         {
-            ["clear-day"] = "Clear",
-            ["clear-night"] = "Clear",
-            ["cloudy"] = "Cloudy",
-            ["fog"] = "Fog",
-            ["partly-cloudy-day"] = "Partly\nCloudy",
-            ["partly-cloudy-night"] = "Partly\nCloudy",
-            ["rain"] = "Rain",
-            ["sleet"] = "Sleet",
-            ["snow"] = "Snow",
-            ["wind"] = "Wind"
+            ["ClearDay"] = "Clear",
+            ["ClearNight"] = "Clear",
+            ["Cloudy"] = "Cloudy",
+            ["Fog"] = "Fog",
+            ["PartlyCloudyDay"] = "Partly\nCloudy",
+            ["PartlyCloudyNight"] = "Partly\nCloudy",
+            ["Rain"] = "Rain",
+            ["Sleet"] = "Sleet",
+            ["Snow"] = "Snow",
+            ["Wind"] = "Wind"
         };
 
         public Weather(string darkSkyApiKey)
@@ -96,17 +109,19 @@ namespace coreweather
             this.darkSkyApiKey = darkSkyApiKey;
 
             collection = new FontCollection();
-            smFont = new Font(collection.Install("Resources/Weather/Star4000 Small.ttf"), 36);
-            mdFont = new Font(collection.Install("Resources/Weather/Star4000.ttf"), 36);
-            lgFont = new Font(collection.Install("Resources/Weather/Star4000 Large.ttf"), 32);
+            smFont = new Font(collection.Install(Path.Combine(PathExtensions.ResourceDir, "Weather", "Star4000 Small.ttf")), 36);
+            mdFont = new Font(collection.Install(Path.Combine(PathExtensions.ResourceDir, "Weather", "Star4000.ttf")), 36);
+            lgFont = new Font(collection.Install(Path.Combine(PathExtensions.ResourceDir, "Weather", "Star4000 Large.ttf")), 32);
 
             images = new Dictionary<string, Image<Rgba32>>();
-            foreach (var gif in Directory.GetFiles("Resources/Weather/", "*.gif"))
+            foreach (var image in Directory.GetFiles(Path.Combine(PathExtensions.ResourceDir, "Weather"))
+                .Where(x => x.Contains(".png") || x.Contains(".gif")))
             {
-                var basename = Path.GetFileNameWithoutExtension(gif);
-                images.Add(basename, Image.Load(gif));
+                var basename = Path.GetFileNameWithoutExtension(image);
+                images.Add(basename, Image.Load(image));
             }
         }
+
         // only get the data here, buddy
         public async Task<WeatherRendererInfo> GetForecastAsync(string query)
         {
@@ -114,7 +129,9 @@ namespace coreweather
             Location location;
             try
             {
-                var requestUri = string.Format("http://maps.googleapis.com/maps/api/geocode/json?address={0}&sensor=false", Uri.EscapeDataString(query));
+                var requestUri = string.Format(
+                    "http://maps.googleapis.com/maps/api/geocode/json?address={0}&sensor=false",
+                    Uri.EscapeDataString(query));
 
                 using (var client = new HttpClient())
                 {
@@ -137,43 +154,42 @@ namespace coreweather
 
             // request darksky without minutely/hourly, and use location to determine units
             var WeatherService = new DarkSkyService(darkSkyApiKey);
-            DarkSkyResponse forecast = await WeatherService.GetForecast(location.Latitude, location.Longitude, new DarkSkyService.OptionalParameters
-            {
-                DataBlocksToExclude = new List<string> { "minutely", "hourly", },
-                MeasurementUnits = "auto"
-            });
+            DarkSkyResponse forecast = await WeatherService.GetForecast(location.Latitude, location.Longitude,
+                new DarkSkyService.OptionalParameters
+                {
+                    DataBlocksToExclude = new List<ExclusionBlock> { ExclusionBlock.Minutely, ExclusionBlock.Hourly, },
+                    MeasurementUnits = "auto"
+                });
 
-            // timezones suck, convert olson to timezoneinfo
-            var mappings = TzdbDateTimeZoneSource.Default.WindowsMapping.MapZones;
-            var map = mappings.FirstOrDefault(x =>
-                x.TzdbIds.Any(z => z.Equals(forecast.Response.Timezone, StringComparison.OrdinalIgnoreCase)));
-            TimeZoneInfo tz = map == null ? null : TimeZoneInfo.FindSystemTimeZoneById(map.WindowsId);
-
-            // fuckin do it up
+            var timezone = DateTimeZoneProviders.Tzdb[forecast.Response.TimeZone];
+            var myTime = SystemClock.Instance.GetCurrentInstant();
             var info = new WeatherRendererInfo()
             {
                 Address = location.FormattedAddress,
                 Unit = forecast.Response.Flags.Units == "us" ? "F" : "C",
-                Date = TimeZoneInfo.ConvertTime(DateTime.UtcNow, tz),
+                Date = myTime.InZone(timezone),
                 Temperature = forecast.Response.Currently.Temperature,
                 FeelsLike = forecast.Response.Currently.ApparentTemperature,
                 Alert = forecast.Response.Alerts?[0].Title
             };
 
-            forecast.Response.Daily.Data.GetRange(0, 4).ForEach(delegate (DataPoint day)
+            int counter = 0;
+            foreach (var day in forecast.Response.Daily.Data.Take(4))
             {
                 var dayRender = new WeatherRendererDay()
                 {
-                    HiTemp = day.TemperatureMax,
-                    LoTemp = day.TemperatureMin,
-                    Summary = weatherDescription.ContainsKey(day.Icon) ? weatherDescription[day.Icon] : day.Icon.Replace("-", ""),
-                    Icon = day.Icon,
-                    Date = new DateTime(1970, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc).AddSeconds(day.Time).ToLocalTime()
+                    HiTemp = day.TemperatureHigh,
+                    LoTemp = day.TemperatureLow,
+                    Summary = weatherDescription.ContainsKey(day.Icon.ToString())
+                        ? weatherDescription[day.Icon.ToString()]
+                        : day.Icon.ToString().Replace("-", ""),
+                    Icon = String.Join("-", Regex.Split(day.Icon.ToString(), @"(?<!^)(?=[A-Z])")).ToLower(),
+                    Date = info.Date.Plus(Duration.FromDays(counter))
                 };
 
                 info.Forecast.Add(dayRender);
-            });
-
+                counter++;
+            }
             return info;
         }
 
@@ -185,10 +201,11 @@ namespace coreweather
             {
                 var now = info.Date;
 
-                var topDateLine = now.ToString("h:mm:ss tt").ToUpper();
-                var bottomDateLine = now.ToString("ddd MMM d").ToUpper();
+                var topDateLine = now.ToString("h:mm:ss tt", CultureInfo.CurrentCulture).ToUpper();
+                var bottomDateLine = now.ToString("ddd MMM d", CultureInfo.CurrentCulture).ToUpper();
                 var tickerLine = info.Alert != null ? info.Alert + "\n" : "";
-                tickerLine += $"Temp: {(int)info.Temperature}°{info.Unit}   Feels Like: {(int)info.FeelsLike}°{info.Unit}";
+                tickerLine +=
+                    $"Temp: {(int)info.Temperature}°{info.Unit}   Feels Like: {(int)info.FeelsLike}°{info.Unit}";
 
                 if (info.Alert != null)
                 {
@@ -196,12 +213,36 @@ namespace coreweather
                 }
 
                 // everything except the forecast
-                var cmds = new List<DrawCommand> {
-                    new DrawCommand() {Text = info.Address, Font = mdFont, X = 150, Y = -5, Color = WeatherColors.White },
-                    new DrawCommand() {Text = "Extended Forecast", Font = mdFont, IsRelative = true, X = 0, Y = 36, Color = WeatherColors.Yellow },
-                    new DrawCommand() {Text = topDateLine, Font = smFont, X = 695, Y = 1, Color = WeatherColors.White },
-                    new DrawCommand() {Text = bottomDateLine, Font = smFont, IsRelative = true, X = 0, Y = 25, Color = WeatherColors.White },
-                    new DrawCommand() {Text = tickerLine, Font = mdFont, X = 5, Y = 475, Color = WeatherColors.White },
+                var cmds = new List<DrawCommand>
+                {
+                    new DrawCommand()
+                    {
+                        Text = info.Address,
+                        Font = mdFont,
+                        X = 150,
+                        Y = -5,
+                        Color = WeatherColors.White
+                    },
+                    new DrawCommand()
+                    {
+                        Text = "Extended Forecast",
+                        Font = mdFont,
+                        IsRelative = true,
+                        X = 0,
+                        Y = 36,
+                        Color = WeatherColors.Yellow
+                    },
+                    new DrawCommand() {Text = topDateLine, Font = smFont, X = 695, Y = 1, Color = WeatherColors.White},
+                    new DrawCommand()
+                    {
+                        Text = bottomDateLine,
+                        Font = smFont,
+                        IsRelative = true,
+                        X = 0,
+                        Y = 25,
+                        Color = WeatherColors.White
+                    },
+                    new DrawCommand() {Text = tickerLine, Font = mdFont, X = 5, Y = 475, Color = WeatherColors.White},
                 };
 
                 int bx = 15, by = 90;
@@ -209,20 +250,85 @@ namespace coreweather
                 {
                     cmds.AddRange(new List<DrawCommand>
                     {
-                        new DrawCommand() { X = bx, Y = by },
+                        new DrawCommand() {X = bx, Y = by},
 
                         // day of week, icon, summary
-                        new DrawCommand() {Text = day.Date.ToString("ddd").ToUpper(), TextAlign = TextAlignment.Center, IsRelative = true, X = 100, Font = mdFont, Color = WeatherColors.Yellow},
-                        new DrawCommand() {Image = images.ContainsKey(day.Icon) ? images[day.Icon] : images["clear-day"], IsRelative = true, X = -90, Y = 50 },
-                        new DrawCommand() {Text = day.Summary, TextAlign = TextAlignment.Center, IsRelative = true, X = 90, Y = 125, Font = mdFont, Color = WeatherColors.White},
+                        new DrawCommand()
+                        {
+                            Text = day.Date.ToString("ddd", CultureInfo.CurrentCulture).ToUpper(),
+                            HorizontalAlignment = HorizontalAlignment.Center,
+                            VerticalAlignment = VerticalAlignment.Center,
+                            IsRelative = true,
+                            X = 100,
+                            Font = mdFont,
+                            Color = WeatherColors.Yellow
+                        },
+                        new DrawCommand()
+                        {
+                            Image = images.ContainsKey(day.Icon) ? images[day.Icon] : images["clear-day"],
+                            IsRelative = true,
+                            X = -90,
+                            Y = 50
+                        },
+                        new DrawCommand()
+                        {
+                            Text = day.Summary,
+                            HorizontalAlignment = HorizontalAlignment.Center,
+                            VerticalAlignment = VerticalAlignment.Center,
+                            IsRelative = true,
+                            X = 90,
+                            Y = 125,
+                            Font = mdFont,
+                            Color = WeatherColors.White
+                        },
 
                         // low temperature
-                        new DrawCommand() {Text = "Lo", TextAlign = TextAlignment.Center, IsRelative = true, X = -50, Y = 100, Font = mdFont, Color = WeatherColors.TealAlso},
-                        new DrawCommand() {Text = day.LoTemp != null ? Math.Round(day.LoTemp.Value, 0).ToString() : "", TextAlign = TextAlignment.Center, IsRelative = true, X = 0, Y = 45, Font = lgFont, Color = WeatherColors.White},
+                        new DrawCommand()
+                        {
+                            Text = "Lo",
+                            HorizontalAlignment = HorizontalAlignment.Center,
+                            VerticalAlignment = VerticalAlignment.Center,
+                            IsRelative = true,
+                            X = -50,
+                            Y = 100,
+                            Font = mdFont,
+                            Color = WeatherColors.TealAlso
+                        },
+                        new DrawCommand()
+                        {
+                            Text = day.LoTemp != null ? Math.Round(day.LoTemp.Value, 0).ToString() : "",
+                            HorizontalAlignment = HorizontalAlignment.Center,
+                            VerticalAlignment = VerticalAlignment.Center,
+                            IsRelative = true,
+                            X = 0,
+                            Y = 45,
+                            Font = lgFont,
+                            Color = WeatherColors.White
+                        },
 
                         // high temperature
-                        new DrawCommand() {Text = "Hi", TextAlign = TextAlignment.Center, IsRelative = true, X = 100, Y = -45, Font = mdFont, Color = WeatherColors.Yellow},
-                        new DrawCommand() {Text = day.HiTemp != null ? Math.Round(day.HiTemp.Value, 0).ToString() : "", TextAlign = TextAlignment.Center, IsRelative = true, X = 0, Y = 45, Font = lgFont, Color = WeatherColors.White},
+                        new DrawCommand()
+                        {
+                            Text = "Hi",
+                            HorizontalAlignment = HorizontalAlignment.Center,
+                            VerticalAlignment = VerticalAlignment.Center,
+                            IsRelative = true,
+                            X = 100,
+                            Y = -45,
+                            Font = mdFont,
+                            Color = WeatherColors.Yellow
+                        },
+                        new DrawCommand()
+                        {
+                            Text = day.HiTemp != null ? Math.Round(day.HiTemp.Value, 0).ToString() : "",
+                            HorizontalAlignment = HorizontalAlignment.Center,
+                            VerticalAlignment = VerticalAlignment.Center,
+                            IsRelative = true,
+                            X = 0,
+                            Y = 45,
+                            Font = lgFont,
+                            Color = WeatherColors.White
+                        },
                     });
 
                     bx += 244;
@@ -236,7 +342,8 @@ namespace coreweather
                     {
                         x += cmd.X;
                         y += cmd.Y;
-                    } else
+                    }
+                    else
                     {
                         x = cmd.X;
                         y = cmd.Y;
@@ -245,7 +352,7 @@ namespace coreweather
                     // if we have a text object, use textalignment, color, and text fields
                     if (cmd.Text != null)
                     {
-                        var textOpts = new TextGraphicsOptions(false) { TextAlignment = cmd.TextAlign };
+                        var textOpts = new TextGraphicsOptions(false) { HorizontalAlignment = cmd.HorizontalAlignment, VerticalAlignment = cmd.VerticalAlignment };
                         image.DrawText(cmd.Text, cmd.Font, WeatherColors.Black, new Vector2(x + 2, y + 2), textOpts);
                         image.DrawText(cmd.Text, cmd.Font, cmd.Color, new Vector2(x, y), textOpts);
                     }
@@ -253,14 +360,13 @@ namespace coreweather
                     // if we have an image object, use the image field
                     if (cmd.Image != null)
                     {
-                        image.DrawImage(cmd.Image, ImageSharp.PixelFormats.PixelBlenderMode.Normal, 1.0f, new ImageSharp.Size(cmd.Image.Width, cmd.Image.Height), new Point(x, y));
+                        image.DrawImage(cmd.Image, ImageSharp.PixelFormats.PixelBlenderMode.Normal, 1.0f,
+                            new Size(cmd.Image.Width, cmd.Image.Height), new Point(x, y));
                     }
                 }
-
-                image.SaveAsGif(output);
-                //image.SaveAsPng(output);
+                image.SaveAsPng(output);
             }
-
+            output.Seek(0, SeekOrigin.Begin);
             return output;
         }
     }

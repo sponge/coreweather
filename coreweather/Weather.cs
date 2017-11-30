@@ -1,8 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
-using ImageSharp;
-using ImageSharp.Drawing;
 using DarkSky.Services;
 using System.IO;
 using DarkSky.Models;
@@ -13,12 +11,11 @@ using System.Net.Http;
 using Newtonsoft.Json.Linq;
 using NodaTime.TimeZones;
 using System.Linq;
-using Coremero.Utilities;
-using ImageSharp.Drawing.Pens;
-using ImageSharp.Quantizers;
 using NodaTime;
 using SixLabors.Primitives;
 using System.Text.RegularExpressions;
+using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.Drawing;
 
 namespace Coremero.Plugin.Weather
 {
@@ -43,6 +40,7 @@ namespace Coremero.Plugin.Weather
     public class DrawCommand
     {
         public bool IsRelative { get; set; }
+        public int ContentWidth { get; set; }
         public int X { get; set; }
         public int Y { get; set; }
         public string Text { get; set; }
@@ -104,17 +102,17 @@ namespace Coremero.Plugin.Weather
             ["Wind"] = "Wind"
         };
 
-        public Weather(string darkSkyApiKey)
+        public Weather(string darkSkyApiKey, string ResourceDir)
         {
             this.darkSkyApiKey = darkSkyApiKey;
 
             collection = new FontCollection();
-            smFont = new Font(collection.Install(Path.Combine(PathExtensions.ResourceDir, "Weather", "Star4000 Small.ttf")), 36);
-            mdFont = new Font(collection.Install(Path.Combine(PathExtensions.ResourceDir, "Weather", "Star4000.ttf")), 36);
-            lgFont = new Font(collection.Install(Path.Combine(PathExtensions.ResourceDir, "Weather", "Star4000 Large.ttf")), 32);
+            smFont = new Font(collection.Install(Path.Combine(ResourceDir, "Weather", "Star4000 Small.ttf")), 36);
+            mdFont = new Font(collection.Install(Path.Combine(ResourceDir, "Weather", "Star4000.ttf")), 36);
+            lgFont = new Font(collection.Install(Path.Combine(ResourceDir, "Weather", "Star4000 Large.ttf")), 32);
 
             images = new Dictionary<string, Image<Rgba32>>();
-            foreach (var image in Directory.GetFiles(Path.Combine(PathExtensions.ResourceDir, "Weather"))
+            foreach (var image in Directory.GetFiles(Path.Combine(ResourceDir, "Weather"))
                 .Where(x => x.Contains(".png") || x.Contains(".gif")))
             {
                 var basename = Path.GetFileNameWithoutExtension(image);
@@ -197,7 +195,7 @@ namespace Coremero.Plugin.Weather
         {
             MemoryStream output = new MemoryStream();
 
-            using (Image<Rgba32> image = new Image<Rgba32>(images["background"]))
+            using (Image<Rgba32> image = images["background"].Clone())
             {
                 var now = info.Date;
 
@@ -209,7 +207,7 @@ namespace Coremero.Plugin.Weather
 
                 if (info.Alert != null)
                 {
-                    image.Fill<Rgba32>(WeatherColors.Red, new Rectangle(0, 480, image.Width, 96));
+                    image.Mutate(i => i.Fill<Rgba32>(WeatherColors.Red, new Rectangle(0, 480, image.Width, 96)));
                 }
 
                 // everything except the forecast
@@ -260,15 +258,18 @@ namespace Coremero.Plugin.Weather
                             VerticalAlignment = VerticalAlignment.Center,
                             IsRelative = true,
                             X = 100,
+                            Y = 21,
                             Font = mdFont,
                             Color = WeatherColors.Yellow
                         },
                         new DrawCommand()
                         {
                             Image = images.ContainsKey(day.Icon) ? images[day.Icon] : images["clear-day"],
+                            HorizontalAlignment = HorizontalAlignment.Center,
+                            ContentWidth = 190,
                             IsRelative = true,
                             X = -90,
-                            Y = 50
+                            Y = 35
                         },
                         new DrawCommand()
                         {
@@ -277,7 +278,7 @@ namespace Coremero.Plugin.Weather
                             VerticalAlignment = VerticalAlignment.Center,
                             IsRelative = true,
                             X = 90,
-                            Y = 125,
+                            Y = 145,
                             Font = mdFont,
                             Color = WeatherColors.White
                         },
@@ -290,7 +291,7 @@ namespace Coremero.Plugin.Weather
                             VerticalAlignment = VerticalAlignment.Center,
                             IsRelative = true,
                             X = -50,
-                            Y = 100,
+                            Y = 90,
                             Font = mdFont,
                             Color = WeatherColors.TealAlso
                         },
@@ -353,18 +354,24 @@ namespace Coremero.Plugin.Weather
                     if (cmd.Text != null)
                     {
                         var textOpts = new TextGraphicsOptions(false) { HorizontalAlignment = cmd.HorizontalAlignment, VerticalAlignment = cmd.VerticalAlignment };
-                        image.DrawText(cmd.Text, cmd.Font, WeatherColors.Black, new Vector2(x + 2, y + 2), textOpts);
-                        image.DrawText(cmd.Text, cmd.Font, cmd.Color, new Vector2(x, y), textOpts);
+                        image.Mutate(i => i.DrawText(cmd.Text, cmd.Font, WeatherColors.Black, new Vector2(x + 2, y + 2), textOpts));
+                        image.Mutate(i => i.DrawText(cmd.Text, cmd.Font, cmd.Color, new Vector2(x, y), textOpts));
                     }
 
                     // if we have an image object, use the image field
                     if (cmd.Image != null)
                     {
-                        image.DrawImage(cmd.Image, ImageSharp.PixelFormats.PixelBlenderMode.Normal, 1.0f,
-                            new Size(cmd.Image.Width, cmd.Image.Height), new Point(x, y));
+                        Point pos = new Point(x, y);
+                        if (cmd.ContentWidth > 0 && cmd.HorizontalAlignment == HorizontalAlignment.Center)
+                        {
+                            pos.X += (cmd.ContentWidth - cmd.Image.Width) / 2;
+                        }
+
+                        image.Mutate(i => i.DrawImage(cmd.Image, SixLabors.ImageSharp.PixelFormats.PixelBlenderMode.Normal, 1.0f,
+                            new Size(cmd.Image.Width, cmd.Image.Height), pos));
                     }
                 }
-                image.SaveAsPng(output);
+                image.SaveAsGif(output);
             }
             output.Seek(0, SeekOrigin.Begin);
             return output;

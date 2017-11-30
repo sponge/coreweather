@@ -1,19 +1,21 @@
 ﻿using System.IO;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
+using Coremero.Plugin.Weather;
 
 namespace coreweather
 {
     class Program
     {
-        static void Main(string[] args)
+        static async Task Main(string[] args)
         {
             MainAsync(args).GetAwaiter().GetResult();
+
         }
 
         static async Task MainAsync(string[] args)
         {
-            var Weather = new Weather(args[0]);
+            var Weather = new Weather(args[0], "Resources/");
             WeatherRendererInfo forecast;
 
             if (!File.Exists("cacheresult.json"))
@@ -22,8 +24,10 @@ namespace coreweather
                 string output = JsonConvert.SerializeObject(forecast);
                 File.WriteAllText("cacheresult.json", output);
             }
-
-            forecast = JsonConvert.DeserializeObject<WeatherRendererInfo>(File.ReadAllText("cacheresult.json"));
+            else
+            {
+                forecast = JsonConvert.DeserializeObject<WeatherRendererInfo>(File.ReadAllText("cacheresult.json"));
+            }
 
             using (MemoryStream img = Weather.RenderWeatherImage(forecast))
             using (FileStream fstream = File.OpenWrite("test.gif"))

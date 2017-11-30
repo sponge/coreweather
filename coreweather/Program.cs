@@ -9,12 +9,6 @@ namespace coreweather
     {
         static async Task Main(string[] args)
         {
-            MainAsync(args).GetAwaiter().GetResult();
-
-        }
-
-        static async Task MainAsync(string[] args)
-        {
             var Weather = new Weather(args[0], "Resources/");
             WeatherRendererInfo forecast;
 

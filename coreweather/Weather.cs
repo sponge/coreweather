@@ -137,11 +137,16 @@ namespace Coremero.Plugin.Weather
                     var content = await request.Content.ReadAsStringAsync();
                     JObject results = JObject.Parse(content);
 
+                    var address_components = results["results"][0]["address_components"];
+                    var loc = results["results"][0]["geometry"]["location"];
+
+                    var locality = (from a in address_components where a["types"][0].Value<string>() == "locality" select a["short_name"].Value<string>()).FirstOrDefault();
+
                     location = new Location
                     {
-                        Latitude = results["results"][0]["geometry"]["location"]["lat"].Value<double>(),
-                        Longitude = results["results"][0]["geometry"]["location"]["lng"].Value<double>(),
-                        FormattedAddress = results["results"][0]["formatted_address"].Value<string>()
+                        Latitude = loc["lat"].Value<double>(),
+                        Longitude = loc["lng"].Value<double>(),
+                        FormattedAddress = locality
                     };
                 }
             }
